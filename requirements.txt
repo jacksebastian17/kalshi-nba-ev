@@ -1,1 +1,4 @@
 pytest
+httpx
+cryptography
+python-dotenv

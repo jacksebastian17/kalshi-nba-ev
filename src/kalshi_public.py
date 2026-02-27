@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+import base64
+import logging
+import os
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import httpx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# API endpoint for Kalshi (updated Feb 2026)
+# Old endpoint (retired): https://trading-api.kalshi.com/trade-api/v2
+# New endpoint: https://api.elections.kalshi.com/trade-api/v2
+KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class KalshiTop:
+    bid_yes: float | None
+    bid_no: float | None
+    ask_yes: float | None
+    ask_no: float | None
+
+
+def _load_private_key(key_file_path: str):
+    """Load an RSA private key from a PEM file."""
+    logger.info(f"Loading private key from {key_file_path}")
+    path = Path(key_file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Private key file not found: {key_file_path}")
+    
+    with open(path, "rb") as f:
+        key_data = f.read()
+        logger.debug(f"Key file size: {len(key_data)} bytes")
+        
+    private_key = serialization.load_pem_private_key(
+        key_data,
+        password=None,
+        backend=None,
+    )
+    logger.info(f"Successfully loaded private key (type: {type(private_key).__name__})")
+    return private_key
+
+
+def _sign_request(private_key, timestamp_ms: int, method: str, path: str, use_pkcs1: bool = False) -> str:
+    """
+    Sign a request using RSA.
+    
+    Default: RSA-PSS-SHA256 (more secure)
+    Alternative: PKCS#1 v1.5 with SHA256 (if API requires it)
+    
+    Returns base64-encoded signature.
+    """
+    message = f"{timestamp_ms}{method}{path}".encode("utf-8")
+    logger.debug(f"Signing message: '{timestamp_ms}{method}{path}'")
+    logger.debug(f"Message bytes: {message}")
+    
+    if use_pkcs1:
+        logger.debug("Using PKCS#1 v1.5 padding")
+        signature = private_key.sign(
+            message,
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    else:
+        logger.debug("Using RSA-PSS padding")
+        signature = private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    
+    sig_b64 = base64.b64encode(signature).decode("utf-8")
+    logger.debug(f"Generated signature: {sig_b64[:80]}...")
+    return sig_b64
+
+
+
+def _to_dollars(price) -> float:
+    """
+    Kalshi often represents prices in cents (integers).
+    This helper accepts either cents (e.g. 62) or dollars (0.62) and returns dollars.
+
+    We treat any number >1 as cents and divide by 100.  The value must be
+    strictly positive; None or non-positive values are considered invalid and
+    raise a ValueError so callers can detect bad orderbook data early.
+    """
+    if price is None:
+        raise ValueError("price is None")
+    p = float(price)
+    if p <= 0.0:
+        raise ValueError(f"price must be positive, got {price}")
+    return p / 100.0 if p > 1.0 else p
+
+
+def get_orderbook_top(
+    ticker: str,
+    key_id: Optional[str] = None,
+    key_file_path: Optional[str] = None,
+    use_pkcs1: bool = False,
+) -> KalshiTop:
+    """
+    Pulls the orderbook (bids only) and infers asks using:
+      ask_yes = 1 - bid_no
+      ask_no  = 1 - bid_yes
+
+    Authenticates using RSA-PSS signed headers.  If *key_id* and *key_file_path*
+    are not provided, they will be read from environment variables:
+      - KALSHI_KEY_ID
+      - KALSHI_KEY_FILE
+    """
+    logger.info(f"Fetching orderbook for {ticker}")
+    
+    # Get credentials from args or environment
+    if key_id is None:
+        key_id = os.getenv("KALSHI_KEY_ID")
+    if key_file_path is None:
+        key_file_path = os.getenv("KALSHI_KEY_FILE")
+    
+    if not key_id or not key_file_path:
+        raise ValueError(
+            "Must provide KALSHI_KEY_ID and KALSHI_KEY_FILE "
+            "(via args, environment variables, or both)"
+        )
+    
+    logger.debug(f"Using key ID: {key_id}")
+    
+    # Load private key
+    private_key = _load_private_key(key_file_path)
+    
+    # Build request
+    url = f"{KALSHI_BASE}/markets/{ticker}/orderbook"
+    method = "GET"
+    path = f"/trade-api/v2/markets/{ticker}/orderbook"
+    
+    # Sign request
+    timestamp_ms = int(time.time() * 1000)
+    signature = _sign_request(private_key, timestamp_ms, method, path, use_pkcs1=use_pkcs1)
+    
+    headers = {
+        "KALSHI-ACCESS-KEY": key_id,
+        "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    
+    logger.info(f"Making request to {url}")
+    logger.debug(f"Headers: KALSHI-ACCESS-KEY={key_id}, KALSHI-ACCESS-TIMESTAMP={timestamp_ms}, KALSHI-ACCESS-SIGNATURE={signature[:40]}...")
+    
+    r = httpx.get(url, timeout=10.0, headers=headers)
+    logger.info(f"Response status: {r.status_code}")
+    
+    if r.status_code == 401:
+        logger.error(
+            f"Unauthorized (401) - verify:\n"
+            f"  1. Key ID is correct: {key_id}\n"
+            f"  2. Private key file exists and is valid: {key_file_path}\n"
+            f"  3. Key is activated in Kalshi dashboard\n"
+            f"  4. Signature algorithm matches API expectations"
+        )
+    
+    r.raise_for_status()
+    data = r.json()
+    logger.debug(f"Raw response: {data}")
+
+    # The docs describe "yes bids" and "no bids" arrays. :contentReference[oaicite:1]{index=1}
+    # We’ll be defensive in parsing since field names can vary slightly.
+    ob = data.get("orderbook", data)
+    
+    # Log the orderbook structure if we can't find expected fields
+    if "orderbook" in data:
+        logger.debug(f"Orderbook keys: {list(ob.keys())}")
+    else:
+        logger.warning(f"No 'orderbook' key in response. Top-level keys: {list(data.keys())}")
+
+    yes_bids = ob.get("yes", ob.get("yes_bids", [])) or []
+    no_bids = ob.get("no", ob.get("no_bids", [])) or []
+    
+    if not yes_bids and not no_bids:
+        logger.info(f"Empty orderbook for {ticker}: yes_bids={yes_bids}, no_bids={no_bids}")
+
+    def best_bid(bids):
+        # each entry is typically [price, quantity] or {"price":..., "quantity":...}
+        if not bids:
+            return None
+        first = bids[0]
+        if isinstance(first, list) or isinstance(first, tuple):
+            return _to_dollars(first[0])
+        if isinstance(first, dict):
+            return _to_dollars(first.get("price"))
+        return None
+
+    bid_yes = best_bid(yes_bids)
+    bid_no = best_bid(no_bids)
+
+    ask_yes = (1.0 - bid_no) if bid_no is not None else None
+    ask_no = (1.0 - bid_yes) if bid_yes is not None else None
+
+    return KalshiTop(bid_yes=bid_yes, bid_no=bid_no, ask_yes=ask_yes, ask_no=ask_no)
+
+
+def list_markets(
+    key_id: Optional[str] = None,
+    key_file_path: Optional[str] = None,
+    search_filter: Optional[str] = None,
+    use_pkcs1: bool = False,
+    series_ticker: Optional[str] = None,
+    limit: int = 1000,
+) -> list[dict]:
+    """
+    List available markets from Kalshi.
+    
+    Args:
+        search_filter: Filter by ticker substring (e.g. 'kxnbagame' for NBA games)
+        series_ticker: Filter by series (e.g. 'KXNBAGAME' for NBA game winners)
+        limit: Maximum markets to fetch (default 1000)
+    """
+    logger.info("Fetching market list from Kalshi")
+    
+    if key_id is None:
+        key_id = os.getenv("KALSHI_KEY_ID")
+    if key_file_path is None:
+        key_file_path = os.getenv("KALSHI_KEY_FILE")
+    
+    if not key_id or not key_file_path:
+        raise ValueError(
+            "Must provide KALSHI_KEY_ID and KALSHI_KEY_FILE "
+            "(via args, environment variables, or both)"
+        )
+    
+    private_key = _load_private_key(key_file_path)
+    
+    all_markets = []
+    cursor = None
+    
+    while len(all_markets) < limit:
+        # Build URL with query params
+        base_url = f"{KALSHI_BASE}/markets"
+        query_params = []
+        
+        if series_ticker:
+            query_params.append(f"series_ticker={series_ticker}")
+        if cursor:
+            query_params.append(f"cursor={cursor}")
+        
+        url = base_url + ("?" + "&".join(query_params) if query_params else "")
+        
+        method = "GET"
+        path = "/trade-api/v2/markets" + ("?" + "&".join(query_params) if query_params else "")
+        
+        timestamp_ms = int(time.time() * 1000)
+        signature = _sign_request(private_key, timestamp_ms, method, path, use_pkcs1=use_pkcs1)
+        
+        headers = {
+            "KALSHI-ACCESS-KEY": key_id,
+            "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
+        
+        logger.debug(f"Making request to {url}")
+        r = httpx.get(url, timeout=10.0, headers=headers)
+        logger.debug(f"Response status: {r.status_code}")
+        
+        if r.status_code == 401:
+            logger.error(f"Unauthorized (401) - check key permissions and endpoint: {url}")
+        
+        r.raise_for_status()
+        
+        data = r.json()
+        batch = data.get("markets", [])
+        all_markets.extend(batch)
+        
+        logger.info(f"Retrieved {len(batch)} markets (total so far: {len(all_markets)})")
+        
+        # Check for more pages
+        cursor = data.get("cursor")
+        if not cursor or len(batch) == 0:
+            break
+    
+    logger.info(f"Total markets retrieved: {len(all_markets)}")
+    
+    # Apply text filter if provided
+    if search_filter:
+        all_markets = [m for m in all_markets if search_filter.lower() in m.get("ticker", "").lower()]
+        logger.info(f"Filtered to {len(all_markets)} markets matching '{search_filter}'")
+    
+    return all_markets

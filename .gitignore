@@ -137,6 +137,11 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+
+# API credentials and keys
+*.pem
+*.key
+kalshi-key.pem
 .venv
 env/
 venv/
