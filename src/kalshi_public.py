@@ -91,19 +91,25 @@ def _sign_request(private_key, timestamp_ms: int, method: str, path: str, use_pk
 
 def _to_dollars(price) -> float:
     """
-    Kalshi often represents prices in cents (integers).
-    This helper accepts either cents (e.g. 62) or dollars (0.62) and returns dollars.
+    Normalize Kalshi prices to dollars.
 
-    We treat any number >1 as cents and divide by 100.  The value must be
-    strictly positive; None or non-positive values are considered invalid and
-    raise a ValueError so callers can detect bad orderbook data early.
+    Integers are cents (1 -> 0.01). Floats <= 1 are dollars. Floats > 1 are cents.
     """
     if price is None:
         raise ValueError("price is None")
+
+    if isinstance(price, bool):
+        raise ValueError(f"price must be numeric, got {price}")
+
+    if isinstance(price, int):
+        if price <= 0:
+            raise ValueError(f"price must be positive, got {price}")
+        return price / 100.0
+
     p = float(price)
     if p <= 0.0:
         raise ValueError(f"price must be positive, got {price}")
-    return p / 100.0 if p > 1.0 else p
+    return p if p <= 1.0 else p / 100.0
 
 
 def get_orderbook_top(
@@ -192,15 +198,21 @@ def get_orderbook_top(
         logger.info(f"Empty orderbook for {ticker}: yes_bids={yes_bids}, no_bids={no_bids}")
 
     def best_bid(bids):
-        # each entry is typically [price, quantity] or {"price":..., "quantity":...}
+        # Each entry is typically [price, quantity] or {"price":..., "quantity":...}.
+        # Kalshi may return bids sorted by price ascending, so select the max price.
         if not bids:
             return None
-        first = bids[0]
-        if isinstance(first, list) or isinstance(first, tuple):
-            return _to_dollars(first[0])
-        if isinstance(first, dict):
-            return _to_dollars(first.get("price"))
-        return None
+
+        def extract_price(entry):
+            if isinstance(entry, (list, tuple)):
+                return _to_dollars(entry[0])
+            if isinstance(entry, dict):
+                return _to_dollars(entry.get("price"))
+            return None
+
+        prices = [extract_price(entry) for entry in bids]
+        prices = [p for p in prices if p is not None]
+        return max(prices) if prices else None
 
     bid_yes = best_bid(yes_bids)
     bid_no = best_bid(no_bids)
