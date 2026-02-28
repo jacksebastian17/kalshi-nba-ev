@@ -23,8 +23,10 @@ def scan_markets(
     p_true_yes: Optional[float] = None,
     amer_yes: Optional[int] = None,
     amer_no: Optional[int] = None,
-    edge_threshold: float = 0.02,
+    edge_threshold: float = 0.07,
     slippage_buffer: float = 0.005,
+    fee_rate: float = 0.10,
+    min_price: float = 0.70,
     tickers: Optional[list[str]] = None,
 ) -> list[dict]:
     """
@@ -101,6 +103,8 @@ def scan_markets(
                 ask_no=top.ask_no,
                 edge_threshold=edge_threshold,
                 slippage_buffer=slippage_buffer,
+                fee_rate=fee_rate,
+                min_price=min_price,
             )
             
             result = {

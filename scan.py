@@ -25,8 +25,15 @@ from src.sharp_model import TwoWayOdds, fair_prob_from_two_way
 
 load_dotenv()
 
-# Suppress all logging output
-logging.getLogger().setLevel(logging.CRITICAL)
+# Configure logging for clean terminal output
+# Set to DEBUG to see detailed API info, WARNING for errors only
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+# Keep all loggers at WARNING for clean output
+logging.getLogger().setLevel(logging.WARNING)
 
 
 def main():
@@ -78,8 +85,22 @@ def main():
         home_edge_yes = kalshi_edge_yes(p_home, home_ob.ask_yes) if home_ob.ask_yes else None
         home_edge_no = kalshi_edge_no(p_home, home_ob.ask_no) if home_ob.ask_no else None
         
-        away_decision = decide(p_true_yes=p_away, ask_yes=away_ob.ask_yes, ask_no=away_ob.ask_no)
-        home_decision = decide(p_true_yes=p_home, ask_yes=home_ob.ask_yes, ask_no=home_ob.ask_no)
+        away_decision = decide(
+            p_true_yes=p_away,
+            ask_yes=away_ob.ask_yes,
+            ask_no=away_ob.ask_no,
+            edge_threshold=0.07,  # 7% minimum edge
+            fee_rate=0.10,  # 10% fee rate
+            min_price=0.70  # Only trade 70¢+ contracts
+        )
+        home_decision = decide(
+            p_true_yes=p_home,
+            ask_yes=home_ob.ask_yes,
+            ask_no=home_ob.ask_no,
+            edge_threshold=0.07,
+            fee_rate=0.10,
+            min_price=0.70
+        )
         
         # Format prices to 2 decimals
         away_ask_yes = f"{away_ob.ask_yes:.2f}" if away_ob.ask_yes else "N/A"
@@ -95,11 +116,21 @@ def main():
         # Print game header
         print(f"{game.away_team:20} @ {game.home_team:20} | Pinnacle: {game.pinnacle_away_ml:+6d}/{game.pinnacle_home_ml:+6d}")
         
-        # Print away side: ticker | p_true | prices | edges (YES/NO)
-        print(f"  {game.away_team:15} | p={p_away:.3f} | Y:{away_ask_yes} N:{away_ask_no} | edge_y={away_edge_yes_str} edge_n={away_edge_no_str} | {away_decision.action}")
+        # Print away side with net edge after fees
+        away_fee_str = f"fee={away_decision.fee:.3f}" if away_decision.fee > 0 else "filtered"
+        away_net_str = f"net={away_decision.edge:+.3f}" if away_decision.fee > 0 else "<70c"
+        print(f"  {game.away_team:15} | p={p_away:.3f} | Y:{away_ask_yes} N:{away_ask_no} | raw_y={away_edge_yes_str} raw_n={away_edge_no_str} | {away_fee_str} {away_net_str} | {away_decision.action}")
         
-        # Print home side
-        print(f"  {game.home_team:15} | p={p_home:.3f} | Y:{home_ask_yes} N:{home_ask_no} | edge_y={home_edge_yes_str} edge_n={home_edge_no_str} | {home_decision.action}")
+        # Print home side with net edge after fees
+        home_fee_str = f"fee={home_decision.fee:.3f}" if home_decision.fee > 0 else "filtered"
+        home_net_str = f"net={home_decision.edge:+.3f}" if home_decision.fee > 0 else "<70c"
+        print(f"  {game.home_team:15} | p={p_home:.3f} | Y:{home_ask_yes} N:{home_ask_no} | raw_y={home_edge_yes_str} raw_n={home_edge_no_str} | {home_fee_str} {home_net_str} | {home_decision.action}")
+        
+        # If action was taken, show the reason
+        if away_decision.action != "SKIP":
+            print(f"    -> {away_decision.reason}")
+        if home_decision.action != "SKIP":
+            print(f"    -> {home_decision.reason}")
         print()
         
         if away_decision.action != "SKIP" or home_decision.action != "SKIP":
@@ -107,9 +138,9 @@ def main():
     
     print("=" * 120)
     if opportunity_count > 0:
-        print(f"✓ Found {opportunity_count} opportunity(ies)")
+        print(f"[+] Found {opportunity_count} opportunity(ies)")
     else:
-        print("✗ No arbitrage opportunities found")
+        print("[-] No arbitrage opportunities found")
     print("=" * 120)
     
     return 0

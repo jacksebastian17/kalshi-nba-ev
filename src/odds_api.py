@@ -45,7 +45,7 @@ def get_nba_games_with_pinnacle(api_key: str) -> list[NBAGame]:
         httpx.HTTPError if API request fails
         ValueError if response is malformed
     """
-    logger.info("Fetching NBA games from Odds API with Pinnacle odds...")
+    logger.debug("Fetching NBA games from Odds API with Pinnacle odds...")
     
     url = f"{ODDS_API_BASE}/sports/basketball_nba/odds"
     params = {
@@ -62,13 +62,16 @@ def get_nba_games_with_pinnacle(api_key: str) -> list[NBAGame]:
         # Log rate limit info
         remaining = response.headers.get("x-requests-remaining", "?")
         used = response.headers.get("x-requests-used", "?")
-        logger.info(f"API requests used: {used}, remaining: {remaining}")
+        logger.debug(f"API requests used: {used}, remaining: {remaining}")
         
     except httpx.HTTPError as e:
         logger.error(f"API request failed: {e}")
         raise
     
     data = response.json()
+    
+    logger.debug(f"Fetched {len(data)} games from Odds API")
+    
     games = []
     
     for game in data:
@@ -115,7 +118,7 @@ def get_nba_games_with_pinnacle(api_key: str) -> list[NBAGame]:
         else:
             logger.debug(f"Skipping game (no Pinnacle odds): {away_team} @ {home_team}")
     
-    logger.info(f"Found {len(games)} NBA games with Pinnacle moneylines")
+    logger.debug(f"Found {len(games)} NBA games with Pinnacle moneylines")
     return games
 
 

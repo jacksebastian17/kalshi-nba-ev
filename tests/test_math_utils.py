@@ -4,6 +4,8 @@ from src.math_utils import (
     devig_two_way,
     kalshi_edge_yes,
     kalshi_edge_no,
+    kalshi_fee,
+    kalshi_edge_after_fees,
 )
 
 
@@ -32,3 +34,18 @@ def test_kalshi_edge_yes():
 
 def test_kalshi_edge_no():
     assert abs(kalshi_edge_no(0.57, 0.40) - 0.03) < 1e-9
+
+
+def test_kalshi_fee():
+    # Fee on 74c contract: 10% * (1 - 0.74) = 0.026
+    assert abs(kalshi_fee(0.74, 0.10) - 0.026) < 1e-9
+    # Fee on 27c contract: 10% * (1 - 0.27) = 0.073
+    assert abs(kalshi_fee(0.27, 0.10) - 0.073) < 1e-9
+
+
+def test_kalshi_edge_after_fees():
+    # p_true=75%, price=74c, edge=1%
+    # fee = 10% * 26c = 2.6c
+    # net = 1% - 2.6% = -1.6%
+    net_edge = kalshi_edge_after_fees(0.75, 0.74, 0.10)
+    assert abs(net_edge - (0.01 - 0.026)) < 1e-9

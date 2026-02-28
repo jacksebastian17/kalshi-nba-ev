@@ -34,7 +34,7 @@ class KalshiTop:
 
 def _load_private_key(key_file_path: str):
     """Load an RSA private key from a PEM file."""
-    logger.info(f"Loading private key from {key_file_path}")
+    logger.debug(f"Loading private key from {key_file_path}")
     path = Path(key_file_path)
     if not path.exists():
         raise FileNotFoundError(f"Private key file not found: {key_file_path}")
@@ -48,7 +48,7 @@ def _load_private_key(key_file_path: str):
         password=None,
         backend=None,
     )
-    logger.info(f"Successfully loaded private key (type: {type(private_key).__name__})")
+    logger.debug(f"Successfully loaded private key (type: {type(private_key).__name__})")
     return private_key
 
 
@@ -128,7 +128,7 @@ def get_orderbook_top(
       - KALSHI_KEY_ID
       - KALSHI_KEY_FILE
     """
-    logger.info(f"Fetching orderbook for {ticker}")
+    logger.debug(f"Fetching orderbook for {ticker}")
     
     # Get credentials from args or environment
     if key_id is None:
@@ -162,11 +162,11 @@ def get_orderbook_top(
         "KALSHI-ACCESS-SIGNATURE": signature,
     }
     
-    logger.info(f"Making request to {url}")
+    logger.debug(f"Making request to {url}")
     logger.debug(f"Headers: KALSHI-ACCESS-KEY={key_id}, KALSHI-ACCESS-TIMESTAMP={timestamp_ms}, KALSHI-ACCESS-SIGNATURE={signature[:40]}...")
     
     r = httpx.get(url, timeout=10.0, headers=headers)
-    logger.info(f"Response status: {r.status_code}")
+    logger.debug(f"Response status: {r.status_code}")
     
     if r.status_code == 401:
         logger.error(
@@ -179,7 +179,8 @@ def get_orderbook_top(
     
     r.raise_for_status()
     data = r.json()
-    logger.debug(f"Raw response: {data}")
+    
+    logger.debug(f"Fetched orderbook for {ticker}")
 
     # The docs describe "yes bids" and "no bids" arrays. :contentReference[oaicite:1]{index=1}
     # We’ll be defensive in parsing since field names can vary slightly.
@@ -195,7 +196,7 @@ def get_orderbook_top(
     no_bids = ob.get("no", ob.get("no_bids", [])) or []
     
     if not yes_bids and not no_bids:
-        logger.info(f"Empty orderbook for {ticker}: yes_bids={yes_bids}, no_bids={no_bids}")
+        logger.debug(f"Empty orderbook for {ticker}: yes_bids={yes_bids}, no_bids={no_bids}")
 
     def best_bid(bids):
         # Each entry is typically [price, quantity] or {"price":..., "quantity":...}.
@@ -203,16 +204,28 @@ def get_orderbook_top(
         if not bids:
             return None
 
-        def extract_price(entry):
+        def extract_price_and_quantity(entry):
             if isinstance(entry, (list, tuple)):
-                return _to_dollars(entry[0])
+                price = _to_dollars(entry[0])
+                quantity = entry[1] if len(entry) > 1 else 0
+                return (price, quantity)
             if isinstance(entry, dict):
-                return _to_dollars(entry.get("price"))
-            return None
+                price = _to_dollars(entry.get("price")) if entry.get("price") is not None else None
+                quantity = entry.get("quantity", 0)
+                return (price, quantity)
+            return (None, 0)
 
-        prices = [extract_price(entry) for entry in bids]
-        prices = [p for p in prices if p is not None]
-        return max(prices) if prices else None
+        price_qty_pairs = [extract_price_and_quantity(entry) for entry in bids]
+        price_qty_pairs = [(p, q) for p, q in price_qty_pairs if p is not None]
+        
+        if not price_qty_pairs:
+            return None
+            
+        best_price = max(p for p, q in price_qty_pairs)
+        total_liquidity = sum(q for p, q in price_qty_pairs if p == best_price)
+        
+        logger.debug(f"  Best bid: ${best_price:.2f} with {total_liquidity} contracts available")
+        return best_price
 
     bid_yes = best_bid(yes_bids)
     bid_no = best_bid(no_bids)
@@ -239,7 +252,7 @@ def list_markets(
         series_ticker: Filter by series (e.g. 'KXNBAGAME' for NBA game winners)
         limit: Maximum markets to fetch (default 1000)
     """
-    logger.info("Fetching market list from Kalshi")
+    logger.debug("Fetching market list from Kalshi")
     
     if key_id is None:
         key_id = os.getenv("KALSHI_KEY_ID")
@@ -294,18 +307,18 @@ def list_markets(
         batch = data.get("markets", [])
         all_markets.extend(batch)
         
-        logger.info(f"Retrieved {len(batch)} markets (total so far: {len(all_markets)})")
+        logger.debug(f"Retrieved {len(batch)} markets (total so far: {len(all_markets)})")
         
         # Check for more pages
         cursor = data.get("cursor")
         if not cursor or len(batch) == 0:
             break
     
-    logger.info(f"Total markets retrieved: {len(all_markets)}")
+    logger.debug(f"Total markets retrieved: {len(all_markets)}")
     
     # Apply text filter if provided
     if search_filter:
         all_markets = [m for m in all_markets if search_filter.lower() in m.get("ticker", "").lower()]
-        logger.info(f"Filtered to {len(all_markets)} markets matching '{search_filter}'")
+        logger.debug(f"Filtered to {len(all_markets)} markets matching '{search_filter}'")
     
     return all_markets
