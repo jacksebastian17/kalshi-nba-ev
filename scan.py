@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Clean output scanner for Pinnacle → Kalshi arbitrage.
+Clean output scanner for Pinnacle → Kalshi +EV detection.
 
 Run: python scan.py
 
@@ -39,7 +39,7 @@ logging.getLogger().setLevel(logging.WARNING)
 def main():
     """Scan and print clean game-by-game results."""
     print("\n" + "=" * 120)
-    print(f"NBA ARBITRAGE SCAN | {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"NBA +EV SCAN | {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print("=" * 120 + "\n")
     
     api_key = os.getenv("ODDS_API_KEY")
@@ -90,16 +90,16 @@ def main():
             ask_yes=away_ob.ask_yes,
             ask_no=away_ob.ask_no,
             edge_threshold=0.07,  # 7% minimum edge
-            fee_rate=0.10,  # 10% fee rate
-            min_price=0.70  # Only trade 70¢+ contracts
+            fee_maker=False,  # Use taker fees
+            min_price=0.05  # Lower min price with new fee structure
         )
         home_decision = decide(
             p_true_yes=p_home,
             ask_yes=home_ob.ask_yes,
             ask_no=home_ob.ask_no,
             edge_threshold=0.07,
-            fee_rate=0.10,
-            min_price=0.70
+            fee_maker=False,
+            min_price=0.05
         )
         
         # Format prices to 2 decimals
@@ -138,9 +138,9 @@ def main():
     
     print("=" * 120)
     if opportunity_count > 0:
-        print(f"[+] Found {opportunity_count} opportunity(ies)")
+        print(f"[+] Found {opportunity_count} +EV opportunity(ies)")
     else:
-        print("[-] No arbitrage opportunities found")
+        print("[-] No +EV opportunities found")
     print("=" * 120)
     
     return 0

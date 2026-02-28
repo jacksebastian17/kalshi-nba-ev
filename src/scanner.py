@@ -16,19 +16,19 @@ def evaluate_market(
     key_file_path: Optional[str] = None,
     edge_threshold: float = 0.07,
     slippage_buffer: float = 0.005,
-    fee_rate: float = 0.10,
-    min_price: float = 0.70,
+    fee_maker: bool = False,
+    min_price: float = 0.05,
 ) -> Decision:
-    """High‑level helper for V2.
+    """High-level helper for V3 (updated fee structure).
 
-    Pulls top prices for *ticker* and runs the decision logic with fee awareness.
+    Pulls top prices for *ticker* and runs the decision logic with corrected Kalshi fees.
     
     Args:
         ticker: Kalshi market ticker
         p_true_yes: True probability of YES outcome (from de-vigged odds)
         edge_threshold: Minimum net edge required (default 7%)
-        fee_rate: Kalshi fee tier rate (default 10%)
-        min_price: Minimum contract price to consider (default 70¢)
+        fee_maker: If True, use maker fee; if False, use taker fee (default)
+        min_price: Minimum contract price to consider (default 5¢; v2 used 70¢)
     """
     logger.info(f"Evaluating {ticker}")
     logger.debug(f"p_true_yes={p_true_yes:.4f}")
@@ -40,7 +40,7 @@ def evaluate_market(
         ask_no=top.ask_no,
         edge_threshold=edge_threshold,
         slippage_buffer=slippage_buffer,
-        fee_rate=fee_rate,
+        fee_maker=fee_maker,
         min_price=min_price,
     )
     logger.info(f"Result: {decision.action}")

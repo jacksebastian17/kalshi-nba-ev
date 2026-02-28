@@ -1,29 +1,36 @@
 ﻿# kalshi-nba-ev
 
-NBA arbitrage detector comparing Pinnacle moneylines to Kalshi prediction markets.
+NBA +EV detector comparing Pinnacle moneylines to Kalshi prediction markets.
 
 ## Overview
 
 Fetches Pinnacle NBA odds, de-vigs to fair probabilities, compares to Kalshi prices, and identifies +EV opportunities.
 
-**V2 Update:** Now accounts for Kalshi's fee structure (10% of potential profit), applies 70¢ minimum price filter, and uses 7% edge threshold.
+**V3 Update (Feb 2026):** Fixed fee calculation to use official Kalshi formula `ceil_to_cent(0.07 * contracts * P * (1 - P))` with symmetric fees peaking at P=0.50. Now supports trading cheaper markets with good edges.
 
 ## Fee Structure
 
-Kalshi charges **10% of potential profit** (not flat per-contract fees):
+Kalshi charges a **taker fee of 7%** based on a quadratic formula:
 
 ```
-Fee = 10% × (1 - contract_price)
+Fee = ceil_to_cent(0.07 * contracts * P * (1 - P))
 ```
 
-Examples:
-- 20¢ contract: 8¢ fee (40% of price) ❌
-- 70¢ contract: 3¢ fee (4.3% of price) ✓
-- 80¢ contract: 2¢ fee (2.5% of price) ✓
+where P is the contract price (0–1).
 
-**Result:** Only contracts >= 70¢ are profitable after fees.
+**Key differences from old model:**
+- Old: fee peaked at 0% (expensive for cheap contracts)
+- New: fee peaks at 50% (symmetric: fee(20¢) ≈ fee(80¢))
 
-**Volume tiers:** 10% (default) → 7% ($25k/mo) → 5% ($100k/mo) → 2% ($500k/mo)
+Examples (taker fees, per contract):
+- 5¢ contract: ceil(0.07 × 0.05 × 0.95) = $0.01
+- 30¢ contract: ceil(0.07 × 0.30 × 0.70) = $0.02
+- 50¢ contract: ceil(0.07 × 0.50 × 0.50) = $0.02 (peak)
+- 95¢ contract: ceil(0.07 × 0.95 × 0.05) = $0.01
+
+**Result:** Can now profitably trade cheaper markets with good edges! No longer limited to 70¢+ contracts.
+
+**Maker fees (optional):** Half the taker rate at 1.75%, e.g., ceil_to_cent(0.0175 * contracts * P * (1 - P))
 
 ## Quick Start
 
@@ -72,19 +79,26 @@ python -m src.cli --ticker KXNBAGAME-26FEB27CLEDET-DET --action top
 
 Evaluate with odds (fee-aware parameters):
 ```bash
-python -m src.cli --ticker KXNBAGAME-26FEB27CLEDET-DET \
+python -m src.cli --ticker KXNBAGAME-26FEB28CLEDET-DET \
   --amer-yes +212 \
   --amer-no -248 \
-  --fee-rate 0.10 \           # 10% fee (change to 0.07 if $25k+/month volume)
-  --min-price 0.70 \          # Skip contracts < 70¢ (fees too high)
-  --edge-threshold 0.07 \     # 7% threshold (accounts for fees + slippage)
+  --action eval
+```
+
+Advanced options:
+```bash
+python -m src.cli --ticker KXNBAGAME-26FEB28CLEDET-DET \
+  --amer-yes +212 \
+  --amer-no -248 \
+  --min-price 0.30 \          # Allow contracts >= 30¢ (default 5¢)
+  --edge-threshold 0.10 \     # 10% threshold (stricter, default 7%)
   --action eval
 ```
 
 **Default parameters:**
-- `fee_rate=0.10` (10% for typical traders)
-- `min_price=0.70` (filter out expensive fees)
-- `edge_threshold=0.07` (7% minimum net edge)
+- `fee_maker=False` (use taker fee; set to True for maker rebates if available)
+- `min_price=0.05` (allow cheap markets; fees are symmetric around 50¢)
+- `edge_threshold=0.07` (7% minimum net edge after all costs)
 
 ## Architecture
 
@@ -94,7 +108,7 @@ python -m src.cli --ticker KXNBAGAME-26FEB27CLEDET-DET \
 - `odds_api` – Pinnacle moneylines via The Odds API
 - `kalshi_public` – RSA-PSS authentication, orderbook fetching
 - `game_matcher` – Team name → Kalshi ticker mapping
-- `decision` – Fee-aware BUY_YES/BUY_NO/SKIP logic (7% threshold, 70¢ filter, 10% fees)
+- `decision` – Fee-aware BUY_YES/BUY_NO/SKIP logic (7% threshold, symmetric fees)
 - `scanner` – Single market evaluation
 - `batch_scanner` – Multi-market evaluation
 - `scan.py` – Automated scanner (CLI)
@@ -109,24 +123,26 @@ python -m src.cli --ticker KXNBAGAME-26FEB27CLEDET-DET \
 5. Build Kalshi tickers (KXNBAGAME-26FEB28CLEDET-CLE, etc.)
 6. Fetch Kalshi orderbook prices (ask_yes, ask_no)
 7. Calculate raw edges: `p_true - price`
-8. Calculate fees: `10% × (1 - price)`
+8. Calculate taker fees: `ceil_to_cent(0.07 * contracts * P * (1 - P))`
 9. Calculate net edge: `raw_edge - fee - slippage`
-10. Filter: Skip if price < 70¢ or net edge < 7%
+10. Filter: Skip if net edge < 7% (default; configurable)
 11. Return decision: BUY_YES / BUY_NO / SKIP
 
 ## Testing
 
 ```bash
-pytest  # 30 tests, all passing (includes fee-aware logic and edge filtering)
+pytest  # 47 tests, all passing (includes corrected fee formula and edge filtering)
 ```
 
 Key test additions:
-- `test_kalshi_fee()` – Verify 10% × (1-price) calculation
-- `test_kalshi_edge_after_fees()` – Verify edge subtraction with slippage
-- `test_skip_when_price_too_low()` – Verify 70¢ filter rejects cheap contracts
+- `test_kalshi_fee_taker_at_*` – Verify correct fee calculation at key prices (5¢, 30¢, 50¢, 95¢)
+- `test_kalshi_fee_taker_symmetry()` – Verify fee symmetry (fee(20¢) = fee(80¢))
+- `test_kalshi_edge_after_fees_*` – Verify net edge calculation with new fees
+- `test_cheap_market_with_good_edge()` – Verify we can trade cheap markets
+- `test_expensive_market_with_modest_edge()` – Verify expensive markets need bigger edges
 
 ## Known Limitations
-
+1-2% at extremes, peak 2% at 50¢ (destroys small edges)
 - **Odds API cache:** 30-60s server-side cache (not real-time)
 - **Kalshi fees:** 2-10% depending on volume/price, destroys small edges
 - **Mainstream efficiency:** NBA moneylines typically 1-3% mismatches (need 7%+ after fees)

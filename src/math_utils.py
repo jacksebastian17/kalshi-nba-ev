@@ -60,57 +60,126 @@ def kalshi_edge_no(p_true_yes: float, ask_price_no: float) -> float:
     return (1.0 - p_true_yes) - ask_price_no
 
 
-def kalshi_fee(price: float, fee_rate: float = 0.10) -> float:
+def ceil_to_cent(value: float) -> float:
     """
-    Calculate Kalshi's fee based on expected profit.
+    Round a dollar amount UP to the nearest $0.01 (cent).
     
-    CRITICAL: Kalshi's fee structure is not a flat amount per contract.
-    Instead, Kalshi charges a percentage of your POTENTIAL PROFIT.
-    
-    Fee = fee_rate × (1 - price)
-    
-    This creates a MASSIVE asymmetry:
-    - Buying underdogs (cheap, e.g., 20¢): Fee = 10% × 80¢ = 8¢ (40% of price!)
-    - Buying favorites (expensive, e.g., 80¢): Fee = 10% × 20¢ = 2¢ (2.5% of price)
-    
-    This is why we ONLY trade contracts >= 70¢. Below that, fees destroy any edge.
+    Used for Kalshi fee calculations to ensure we never underestimate fees.
     
     Args:
-        price: Purchase price of the contract (0-1), e.g., 0.74 for 74¢
-        fee_rate: Fee tier rate based on monthly volume
-                  - 0.10 (10%) for <$25k/month (default)
-                  - 0.07 (7%) for $25k-$100k
-                  - 0.05 (5%) for $100k-$500k
-                  - 0.02 (2%) for $500k+
+        value: Dollar amount (e.g., 0.0251 for 2.51¢)
     
     Returns:
-        Fee amount per contract (in dollars)
+        Value rounded up to nearest cent (e.g., 0.03 for 3¢)
     
     Examples:
-        Charlotte YES at 74¢: fee = 0.10 × (1 - 0.74) = 0.026 = 2.6¢
-        Portland NO at 27¢: fee = 0.10 × (1 - 0.27) = 0.073 = 7.3¢ (ouch!)
+        ceil_to_cent(0.0251) = 0.03
+        ceil_to_cent(0.02) = 0.02
+        ceil_to_cent(0.02001) = 0.03
     """
-    expected_profit = 1.0 - price
-    return fee_rate * expected_profit
+    import math
+    return math.ceil(value * 100) / 100
 
 
-def kalshi_edge_after_fees(p_true: float, ask_price: float, fee_rate: float = 0.10) -> float:
+def kalshi_fee_taker(price: float, contracts: int = 1) -> float:
     """
-    Calculate NET edge after accounting for Kalshi fees.
+    Calculate Kalshi's TAKER fee (actual fee charged when you submit a market order).
     
-    This is your ACTUAL profit per share, not the raw edge.
+    Official formula: ceil_to_cent(0.07 * contracts * P * (1 - P))
+    
+    The fee is based on a quadratic curve that peaks at P=0.5, which represents
+    the maximum variance of the contract. This is more fair than older models.
+    
+    Args:
+        price: Purchase price of the contract in dollars (0-1), e.g., 0.74 for 74¢
+        contracts: Number of contracts (default 1)
+    
+    Returns:
+        Fee per contract in dollars, rounded up to nearest cent
+    
+    Examples:
+        price=0.05 (5¢):   fee = ceil(0.07 * 1 * 0.05 * 0.95) = ceil(0.003325) = $0.01
+        price=0.50 (50¢):  fee = ceil(0.07 * 1 * 0.50 * 0.50) = ceil(0.0175) = $0.02
+        price=0.95 (95¢):  fee = ceil(0.07 * 1 * 0.95 * 0.05) = ceil(0.003325) = $0.01
+    """
+    gross_fee = 0.07 * contracts * price * (1.0 - price)
+    return ceil_to_cent(gross_fee)
+
+
+def kalshi_fee_maker(price: float, contracts: int = 1) -> float:
+    """
+    Calculate Kalshi's MAKER fee (rebate/charge for providing liquidity).
+    
+    Official formula: ceil_to_cent(0.0175 * contracts * P * (1 - P))
+    
+    Maker fees are lower (1.75% vs 7% taker) as an incentive for the market maker
+    to provide liquidity.
+    
+    Args:
+        price: Sell price of the contract in dollars (0-1), e.g., 0.74 for 74¢
+        contracts: Number of contracts (default 1)
+    
+    Returns:
+        Fee per contract in dollars, rounded up to nearest cent
+    
+    Examples:
+        price=0.05 (5¢):   fee = ceil(0.0175 * 1 * 0.05 * 0.95) = ceil(0.00083125) = $0.01
+        price=0.50 (50¢):  fee = ceil(0.0175 * 1 * 0.50 * 0.50) = ceil(0.004375) = $0.01
+        price=0.95 (95¢):  fee = ceil(0.0175 * 1 * 0.95 * 0.05) = ceil(0.00083125) = $0.01
+    """
+    gross_fee = 0.0175 * contracts * price * (1.0 - price)
+    return ceil_to_cent(gross_fee)
+
+
+def kalshi_edge_after_fees_yes(p_true_yes: float, ask_price_yes: float, contracts: int = 1) -> float:
+    """
+    Calculate NET edge for BUY_YES position after accounting for Kalshi taker fees.
     
     Formula:
-      net_edge = raw_edge - fee
-              = (p_true - price) - fee_rate × (1 - price)
+      net_edge = (p_true - price) - fee - slippage_buffer
     
-    Example (Charlotte NO at 27¢, true prob 26%):
-      raw_edge = 0.26 - 0.27 = -0.01 (negative!)
-      fee = 0.10 × (1 - 0.27) = 0.073
-      net_edge = -0.01 - 0.073 = -0.083 = -8.3% ❌
+    Note: slippage_buffer is typically applied separately by the decision engine.
     
-    This is why we need 7%+ edges - fees take 2-8% depending on price!
+    Args:
+        p_true_yes: True probability of YES outcome
+        ask_price_yes: Market ask price for YES contract
+        contracts: Number of contracts (default 1)
+    
+    Returns:
+        Net edge after fees (as decimal, e.g., 0.05 for 5%)
+    
+    Example (price=50¢, p_true=60%):
+      raw_edge = 0.60 - 0.50 = 0.10 (10%)
+      fee = ceil(0.07 * 1 * 0.50 * 0.50) = $0.02 (2%)
+      net_edge = 0.10 - 0.02 = 0.08 (8%) ✓
     """
-    raw_edge = p_true - ask_price
-    fee = kalshi_fee(ask_price, fee_rate)
+    raw_edge = p_true_yes - ask_price_yes
+    fee = kalshi_fee_taker(ask_price_yes, contracts)
+    return raw_edge - fee
+
+
+def kalshi_edge_after_fees_no(p_true_yes: float, ask_price_no: float, contracts: int = 1) -> float:
+    """
+    Calculate NET edge for BUY_NO position after accounting for Kalshi taker fees.
+    
+    Formula:
+      net_edge = ((1 - p_true) - price) - fee - slippage_buffer
+    
+    Note: slippage_buffer is typically applied separately by the decision engine.
+    
+    Args:
+        p_true_yes: True probability of YES outcome (so 1 - p_true_yes = prob of NO)
+        ask_price_no: Market ask price for NO contract
+        contracts: Number of contracts (default 1)
+    
+    Returns:
+        Net edge after fees (as decimal, e.g., 0.05 for 5%)
+    
+    Example (price=50¢, p_true=40%, so p_false=60%):
+      raw_edge = (1 - 0.40) - 0.50 = 0.10 (10%)
+      fee = ceil(0.07 * 1 * 0.50 * 0.50) = $0.02 (2%)
+      net_edge = 0.10 - 0.02 = 0.08 (8%) ✓
+    """
+    raw_edge = (1.0 - p_true_yes) - ask_price_no
+    fee = kalshi_fee_taker(ask_price_no, contracts)
     return raw_edge - fee

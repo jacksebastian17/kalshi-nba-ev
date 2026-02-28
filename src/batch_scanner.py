@@ -25,12 +25,12 @@ def scan_markets(
     amer_no: Optional[int] = None,
     edge_threshold: float = 0.07,
     slippage_buffer: float = 0.005,
-    fee_rate: float = 0.10,
-    min_price: float = 0.70,
+    fee_maker: bool = False,
+    min_price: float = 0.05,
     tickers: Optional[list[str]] = None,
 ) -> list[dict]:
     """
-    Scan a batch of markets and evaluate each one.
+    Scan a batch of markets and evaluate each one using V3 (updated fees).
     
     Returns a list of results: {ticker, decision, bid_yes, bid_no, ask_yes, ask_no, edge, p_true}.
     
@@ -103,7 +103,7 @@ def scan_markets(
                 ask_no=top.ask_no,
                 edge_threshold=edge_threshold,
                 slippage_buffer=slippage_buffer,
-                fee_rate=fee_rate,
+                fee_maker=fee_maker,
                 min_price=min_price,
             )
             
