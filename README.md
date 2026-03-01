@@ -39,6 +39,9 @@ Examples (taker fees, per contract):
 1. Copy `.env.example` to `.env` and fill in:
    - `KALSHI_KEY_ID` and `KALSHI_KEY_FILE` (from Kalshi dashboard)
    - `ODDS_API_KEY` (free tier: 500 requests/month at the-odds-api.com)
+  - Optional rotation: `ODDS_API_KEYS=key1,key2,key3` (comma-separated; tried in order)
+
+If `ODDS_API_KEYS` is set, it takes precedence over `ODDS_API_KEY`.
 
 2. Install dependencies:
 ```bash
@@ -52,6 +55,24 @@ Scans all NBA games automatically:
 ```bash
 python scan.py
 ```
+
+### Continuous Background Scanner (Every 5 Minutes)
+
+Run indefinitely (foreground):
+
+```bash
+python run_background_scan.py
+```
+
+Run in background on PowerShell:
+
+```powershell
+Start-Process python -ArgumentList "run_background_scan.py" -WindowStyle Hidden
+```
+
+Notes:
+- Edit `SCAN_INTERVAL_SECONDS` in `run_background_scan.py` to change cadence.
+- `scan.py` keeps your in-code live-mode settings (`LIVE_MODE`, `MIN_NET_EDGE`, etc.).
 
 **Output format:**
 ```

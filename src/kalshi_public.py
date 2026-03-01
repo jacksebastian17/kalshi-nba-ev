@@ -30,6 +30,10 @@ class KalshiTop:
     bid_no: float | None
     ask_yes: float | None
     ask_no: float | None
+    bid_yes_qty: int | None = None  # Total liquidity at best YES bid
+    bid_no_qty: int | None = None  # Total liquidity at best NO bid
+    ask_yes_qty: int | None = None  # Inferred from bid_no_qty (1-1 correspondence)
+    ask_no_qty: int | None = None   # Inferred from bid_yes_qty (1-1 correspondence)
 
 
 def _load_private_key(key_file_path: str):
@@ -182,7 +186,7 @@ def get_orderbook_top(
     
     logger.debug(f"Fetched orderbook for {ticker}")
 
-    # The docs describe "yes bids" and "no bids" arrays. :contentReference[oaicite:1]{index=1}
+    # The docs describe "yes bids" and "no bids" arrays.
     # We’ll be defensive in parsing since field names can vary slightly.
     ob = data.get("orderbook", data)
     
@@ -202,7 +206,7 @@ def get_orderbook_top(
         # Each entry is typically [price, quantity] or {"price":..., "quantity":...}.
         # Kalshi may return bids sorted by price ascending, so select the max price.
         if not bids:
-            return None
+            return None, None
 
         def extract_price_and_quantity(entry):
             if isinstance(entry, (list, tuple)):
@@ -219,21 +223,30 @@ def get_orderbook_top(
         price_qty_pairs = [(p, q) for p, q in price_qty_pairs if p is not None]
         
         if not price_qty_pairs:
-            return None
+            return None, None
             
         best_price = max(p for p, q in price_qty_pairs)
         total_liquidity = sum(q for p, q in price_qty_pairs if p == best_price)
         
         logger.debug(f"  Best bid: ${best_price:.2f} with {total_liquidity} contracts available")
-        return best_price
+        return best_price, total_liquidity
 
-    bid_yes = best_bid(yes_bids)
-    bid_no = best_bid(no_bids)
+    bid_yes, bid_yes_qty = best_bid(yes_bids)
+    bid_no, bid_no_qty = best_bid(no_bids)
 
     ask_yes = (1.0 - bid_no) if bid_no is not None else None
     ask_no = (1.0 - bid_yes) if bid_yes is not None else None
 
-    return KalshiTop(bid_yes=bid_yes, bid_no=bid_no, ask_yes=ask_yes, ask_no=ask_no)
+    return KalshiTop(
+        bid_yes=bid_yes,
+        bid_no=bid_no,
+        ask_yes=ask_yes,
+        ask_no=ask_no,
+        bid_yes_qty=bid_yes_qty,
+        bid_no_qty=bid_no_qty,
+        ask_yes_qty=bid_no_qty,  # Inferred: buying YES at ask = selling NO at bid
+        ask_no_qty=bid_yes_qty,  # Inferred: buying NO at ask = selling YES at bid
+    )
 
 
 def list_markets(
@@ -322,3 +335,64 @@ def list_markets(
         logger.debug(f"Filtered to {len(all_markets)} markets matching '{search_filter}'")
     
     return all_markets
+
+
+def get_market_details(
+    ticker: str,
+    key_id: Optional[str] = None,
+    key_file_path: Optional[str] = None,
+    use_pkcs1: bool = False,
+) -> dict:
+    """
+    Fetch market details for a specific ticker (includes status, prices, etc).
+    
+    Args:
+        ticker: Market ticker
+        key_id: Kalshi API key ID (or KALSHI_KEY_ID env var)
+        key_file_path: Path to private key PEM (or KALSHI_KEY_FILE env var)
+    
+    Returns:
+        Market details dict with fields like: ticker, status, title, yes_bid, no_bid, etc.
+    """
+    logger.debug(f"Fetching market details for {ticker}")
+    
+    if key_id is None:
+        key_id = os.getenv("KALSHI_KEY_ID")
+    if key_file_path is None:
+        key_file_path = os.getenv("KALSHI_KEY_FILE")
+    
+    if not key_id or not key_file_path:
+        raise ValueError(
+            "Must provide KALSHI_KEY_ID and KALSHI_KEY_FILE "
+            "(via args, environment variables, or both)"
+        )
+    
+    private_key = _load_private_key(key_file_path)
+    
+    url = f"{KALSHI_BASE}/markets/{ticker}"
+    method = "GET"
+    path = f"/trade-api/v2/markets/{ticker}"
+    
+    timestamp_ms = int(time.time() * 1000)
+    signature = _sign_request(private_key, timestamp_ms, method, path, use_pkcs1=use_pkcs1)
+    
+    headers = {
+        "KALSHI-ACCESS-KEY": key_id,
+        "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    
+    logger.debug(f"Making request to {url}")
+    r = httpx.get(url, timeout=10.0, headers=headers)
+    logger.debug(f"Response status: {r.status_code}")
+    
+    if r.status_code == 401:
+        logger.error(f"Unauthorized (401) for market details: {ticker}")
+    
+    r.raise_for_status()
+    data = r.json()
+    
+    market = data.get("market", data)
+    logger.debug(f"Market details: ticker={market.get('ticker')}, status={market.get('status')}")
+    
+    return market
